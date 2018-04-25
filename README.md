@@ -36,9 +36,32 @@ It("should provide Internet connection for containers [Feature:Networking-IPv6][
 Any test with this tag can be excluded from e2e testing by including "IPv6" as part of the --ginkgo.skip regular expression on the e2e test command line (see "e2e Test Command Line" below).
 
 ## Guidelines for Instantiating an IPv6-Only Kubernetes Cluster
-For guidelines on how to instantiate an IPv6-only Kubernetes cluster refer to [kube-v6](https://github.com/leblancd/kube-v6) setup guidelines.
+There are a few methods that can be used to set up a multi-node, IPv6-only Kubernetes cluster:
+* Use the scripts from the [Mirantis/kubeadm-dind-cluster repo](https://github.com/Mirantis/kubeadm-dind-cluster#kubeadm-dind-cluster-) to create a containerized, multi-node IPv6-only cluster running either on a local Linux host or on a Google Compute Engine (GCE) instance . For example, to create a containerized IPv6 cluster on a local host:
+```
+        cd
+        git clone https://github.com/Mirantis/kubeadm-dind-cluster.git
+        cd $HOME/kubeadm-dind-cluster
+        export REMOTE_DNS64_V4SERVER=<your-local-IPv4-DNS-server-IP-address>
+        export IP_MODE=ipv6
+        ./fixed/dind-cluster-v1.10.sh up
+```
+* Manually configure a multi-node cluster on bare metal nodes or VMs using the step-by-step instructions in the [kube-v6 repo](https://github.com/leblancd/kube-v6). These instructions can be easily modified, for example, to bring up an IPv6-only cluster with your favorite (IPv6-capable) CNI plugin, or with your topology of choice.
+* Use scripts from the [Lazyjack repo](https://github.com/pmichali/lazyjack#lazyjack) to instantiate a multi-node, IPv6-only Kubernetes cluster on bare-metal nodes.
 
-## Manually Running the IPv6 Multi-node e2e Test Suite on an IPv6-Only Kubernetes Cluster
+## Running the IPv6 e2e Test Suite on a Local, Containerized Cluster That was Instantiated via Mirantis/kubeadm-dind-cluster
+After spinning up a local, containerized IPv6-only cluster using Mirantis/kubeadm-dind-cluster, the IPv6 e2e test suite can be run either via the dind-cluster.sh script:
+```
+../dind-cluster.sh e2e 'Networking|Services' 'IPv4|DNS|Networking-Performance|Federation|functioning NodePort|preserve source pod'
+```
+or by running the tests through the Kubernetes e2e utility, e.g.:
+```
+cd $GOCODE/src/k8s.io/kubernetes
+go run hack/e2e.go -- --provider=local --v 4 --test --test_args="--ginkgo.focus=Networking|Services --ginkgo.skip=IPv4|DNS|Networking-Performance|Federation|functioning\sNodePort|preserve\ssource\spod --num-nodes=2"
+```
+
+## Running the IPv6 e2e Test Suite on a Bare-Metal/VM Based Cluster from an External Build/Test Server
+The following instructions explain how to connect from a Linux-based build/test server to a multi-node, IPv6-only Kubernetes cluster that is instantiated on bare-metal nodes or VMs. These instructions rely on connectivity to the cluster via the Kubernetes API service IP, although any IPv6 address on the Kubernetes master node that is accessible by the build/test server can be used instead (using the associated API port 6443 instead of service port 443).
 
 #### If you haven't already done so, copy the kubernetes config file and the kubectl binary from your kube-master to a Linux host that will function as an external build/test server
 
@@ -95,7 +118,7 @@ export KUBE_MASTER=local
 export KUBE_MASTER_IP="[fd00:1234::1]:443"
 export KUBERNETES_CONFORMANCE_TEST=n
 cd $GOPATH/src/k8s.io/kubernetes
-go run hack/e2e.go -- --provider=local --v --test --test_args="--host=https://[fd00:1234::1]:443 --ginkgo.focus=Networking|Services --ginkgo.skip=IPv4|DNS|Federation|functioning\sNodePort|preserve\ssource\spod --num-nodes=2"
+go run hack/e2e.go -- --provider=local --v --test --test_args="--host=https://[fd00:1234::1]:443 --ginkgo.focus=Networking|Services --ginkgo.skip=IPv4|DNS|Networking-Performance|Federation|functioning\sNodePort|preserve\ssource\spod --num-nodes=2"
 ```
 An explanation of some of the fields used in this command set:
 ```
@@ -147,23 +170,24 @@ Once this PR is merged, the Kubernetes IPv6 CI test jobs will run the test suite
 | [It] *should function for node-Service: udp* | 91.738 |
 | [It] *should update endpoints: http* | 155.233 |
 | [It] *should prevent NodePort collisions* | 9.892 |
-| [It] *should transfer ~ 1GB onto the service endpoint 1 servers (maximum of 1 clients)* | 68.287 |
 | [It] *should provide secure master service* [Conformance] | 9.044 |
 | [It] *should be able to update NodePorts with two same port numbers but different protocols* | 6.273 |
-| [It] *should create endpoints for unready pods* | 27.295 |
+| [It] *should create endpoints for unready pods* \*\* | 27.295 |
 | [It] *should function for endpoint-Service: http* | 73.971 |
 | [It] *should function for endpoint-Service: udp* | 82.004 |
 | [It] *should serve a basic endpoint from pods* [Conformance] | 61.248 |
 | [It] *should function for client IP based session affinity: http* | 85.018 |
 |--------------------------------------------------------------- **TOTAL TEST TIME:** | **30 min 20 secs** |
 
-\* Sample test times are a rough guideline. These test times were taken on a fairly slow virtualized Kubernetes cluster: CentOS VirtualBox guests on an Ubuntu 16.04 host.
+\*  Sample test times are a rough guideline. These test times were taken on a fairly slow virtualized Kubernetes cluster: CentOS VirtualBox guests on an Ubuntu 16.04 host.<br/>
+\*\* The "should create endpoints for unready pods" exhibits occasional failures, with failures occurring in about 5% to 10% of the runs. These (somewhat rare) failures are under investigation. 
 
 ## Failing Tests that are Being Investigated
 | Test Area | Description | Comment/Issue |
 |:---------:|-------------|---------|
 | **DNS** | [It] *should provide DNS for services* [Conformance] | https://github.com/kubernetes/kubernetes/issues/62883 |
-| **Network Connectivity** | [It] *should provide Internet connection for containers*<br>[Feature:Networking-IPv6][Experimental] | Intermittently failing. Could be collateral damage from a kube-dns crash loop |
+| **Network Connectivity** | [It] *should provide Internet connection for containers*<br>[Feature:Networking-IPv6][Experimental] | Intermittently failing, with failures occurring in about 20-30% of test runs. The failures appear to be correlated with kube-dns crash loop that occasionally occurs. |
+| **Performance** | [It] *should transfer ~ 1GB onto the service endpoint 1 servers (maximum of 1 clients)* | Intermittently failing. Could be an issue with insufficient performance for containerized Kubeclusters on GCE instances. |
 
 ## Tests that Are Being Skipped Since They are not Appropriate
 | Test Area | Description | Comment |
